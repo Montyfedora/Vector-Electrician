@@ -44,8 +44,20 @@ export default defineConfig({
     server: { entry: "server" },
   },
   // Force-enable the Nitro deploy plugin with the chosen preset + output layout.
+  // Cast: the bundled config's type omits Nitro's `vercel` option, but Nitro
+  // supports it at runtime (it's spread into the function's .vc-config.json).
   nitro: {
     preset,
     output,
-  },
+    // Article generation calls Claude and can take 30–60s. Vercel's default
+    // serverless timeout (10s on Hobby) kills it mid-request, which made the
+    // funnel hang on "Finalizing your custom article…". Raise the function
+    // timeout so generation has time to complete. 60s is the Hobby ceiling;
+    // Pro/Enterprise can go higher.
+    vercel: {
+      functions: {
+        maxDuration: 60,
+      },
+    },
+  } as Record<string, unknown>,
 });
