@@ -1141,7 +1141,10 @@ function Step5Account({
       const leadId = "leadId" in res ? res.leadId : null;
 
       setPhase("generating");
-      const art = await generate({
+      // Client-side safety net: if the server call never resolves (network drop,
+      // function killed), don't let the UI hang on "Finalizing…" forever. Race
+      // the generation against a timeout slightly longer than the server's own.
+      const generatePromise = generate({
         data: {
           brand: data.brand,
           domain: data.domain,
@@ -1151,6 +1154,20 @@ function Step5Account({
           priorityKeyword: data.priority + (data.city ? ` ${data.city}` : ""),
         },
       });
+      const art = await Promise.race([
+        generatePromise,
+        new Promise<{ ok: false; error: string }>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                error:
+                  "This is taking longer than expected. Your details are saved — we'll email your article shortly.",
+              }),
+            65000,
+          ),
+        ),
+      ]);
       if (art.ok) {
         setArticle(art.article);
         setPhase("done");
