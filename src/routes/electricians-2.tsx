@@ -229,7 +229,7 @@ function Hero({ onStart }: { onStart: (url: string) => void }) {
               <span className="text-foreground font-semibold">
                 1 free, fully-written SEO article
               </span>{" "}
-              by Claude.ai — custom to your business, your city, your services.
+              by Vector AI — custom to your business, your city, your services.
             </li>
             <li>🔌 Built specifically for licensed electrical contractors.</li>
           </ul>
@@ -398,7 +398,7 @@ function Funnel({
     "Business Analysis",
     "How We Rank You",
     "Your Competitors",
-    "Get My Free Article",
+    "Get Your Free Article & Choose A Package Below",
   ];
 
   return (
@@ -1212,7 +1212,7 @@ function Step5Account({
       <div className="text-center">
         <h3 className="text-xl md:text-2xl font-semibold">Almost done — claim your free article</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Claude.ai will write a comprehensive, ready-to-publish SEO article for{" "}
+          Vector AI will write a comprehensive, ready-to-publish SEO article for{" "}
           <span className="font-semibold text-foreground">{data.brand}</span>. We'll show it on the
           next screen and email a copy.
         </p>
@@ -1268,7 +1268,7 @@ function Step5Account({
       </button>
 
       <div className="rounded-xl border border-border bg-background p-3 text-xs text-muted-foreground">
-        ✨ <strong className="text-foreground">Written by Claude.ai.</strong> A 1,800–2,400 word
+        ✨ <strong className="text-foreground">Written by Vector AI.</strong> A 1,800–2,400 word
         pillar article custom-built for your business, services and city.
       </div>
     </form>
@@ -1281,7 +1281,7 @@ function Step5Account({
 
 function ArticleGeneratingAnimation({ brand }: { brand: string }) {
   const steps = [
-    "Briefing Claude.ai on your business…",
+    "Briefing Vector AI on your business…",
     "Researching your sector & local market…",
     "Drafting key takeaways & table of contents…",
     "Writing H2 sections with expert depth…",
@@ -1298,7 +1298,7 @@ function ArticleGeneratingAnimation({ brand }: { brand: string }) {
       <div className="mx-auto h-14 w-14 rounded-full bg-gradient-to-br from-primary to-accent grid place-items-center text-primary-foreground text-2xl animate-pulse">
         ✨
       </div>
-      <h3 className="mt-4 text-2xl font-bold">Claude.ai is writing your article for {brand}…</h3>
+      <h3 className="mt-4 text-2xl font-bold">Vector AI is writing your article for {brand}…</h3>
       <p className="mt-2 text-sm text-muted-foreground">
         This usually takes 30–60 seconds. Don't close this tab.
       </p>
@@ -1392,7 +1392,7 @@ function ArticleView({
             Custom for {brand}
           </span>
           <span>· {article.readTimeMinutes} min read</span>
-          <span>· Written by Claude.ai</span>
+          <span>· Written by Vector AI</span>
           <span>· Published on {domain}</span>
         </div>
 
@@ -1473,8 +1473,126 @@ function ArticleView({
             💾 Your article is ready above. Use the publish options to get it live on your site.
           </div>
         )}
+
+        {/* CHOOSE A PACKAGE */}
+        <PackagesSection brand={brand} />
       </div>
     </article>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  Packages (placeholder pricing — wire up checkout later)                  */
+/* ────────────────────────────────────────────────────────────────────────── */
+
+const PACKAGES: {
+  name: string;
+  price: string;
+  cadence: string;
+  tagline: string;
+  features: string[];
+  highlight?: boolean;
+}[] = [
+  {
+    name: "Starter",
+    price: "$X",
+    cadence: "/mo",
+    tagline: "Get found in your city.",
+    features: [
+      "4 SEO articles per month",
+      "On-page optimization",
+      "Google Business Profile tune-up",
+      "Monthly ranking report",
+    ],
+  },
+  {
+    name: "Growth",
+    price: "$X",
+    cadence: "/mo",
+    tagline: "Outrank local competitors.",
+    features: [
+      "12 SEO articles per month",
+      "Everything in Starter",
+      "Trust-link building (autopilot)",
+      "AI search optimization (ChatGPT, Perplexity)",
+      "Priority support",
+    ],
+    highlight: true,
+  },
+  {
+    name: "Dominate",
+    price: "$X",
+    cadence: "/mo",
+    tagline: "Own page one, everywhere.",
+    features: [
+      "30 SEO articles per month",
+      "Everything in Growth",
+      "Dedicated strategist",
+      "Multi-location / multi-service coverage",
+      "Guaranteed rankings in 30 days",
+    ],
+  },
+];
+
+function PackagesSection({ brand }: { brand: string }) {
+  return (
+    <section className="pt-2">
+      <div className="text-center">
+        <h2 className="text-2xl md:text-3xl font-bold tracking-tight">
+          Choose a package to get {brand || "your business"} ranking
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground max-w-xl mx-auto">
+          You just saw what one free article looks like. Pick a plan and we'll do this every month —
+          hands-off — until you own your local market.
+        </p>
+      </div>
+
+      <div className="mt-8 grid md:grid-cols-3 gap-4">
+        {PACKAGES.map((p) => (
+          <div
+            key={p.name}
+            className={`relative rounded-2xl border p-6 flex flex-col ${
+              p.highlight
+                ? "border-primary bg-primary/5 shadow-lg shadow-primary/10"
+                : "border-border bg-background"
+            }`}
+          >
+            {p.highlight && (
+              <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold px-3 py-1">
+                Most popular
+              </span>
+            )}
+            <h3 className="font-bold text-lg">{p.name}</h3>
+            <p className="text-sm text-muted-foreground">{p.tagline}</p>
+            <div className="mt-4 flex items-baseline gap-1">
+              <span className="text-3xl font-bold">{p.price}</span>
+              <span className="text-sm text-muted-foreground">{p.cadence}</span>
+            </div>
+            <ul className="mt-5 space-y-2 text-sm flex-1">
+              {p.features.map((f, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <span className="text-emerald-500 mt-0.5">✓</span>
+                  <span>{f}</span>
+                </li>
+              ))}
+            </ul>
+            <button
+              className={`mt-6 w-full rounded-xl font-semibold py-3 transition ${
+                p.highlight
+                  ? "bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-95 shadow-lg shadow-primary/20"
+                  : "border border-border hover:bg-muted"
+              }`}
+            >
+              Choose {p.name}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <p className="mt-4 text-center text-xs text-muted-foreground">
+        Placeholder pricing — final plans and checkout coming soon.
+      </p>
+    </section>
   );
 }
 
