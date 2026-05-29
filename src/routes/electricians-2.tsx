@@ -1378,6 +1378,7 @@ function ArticleView({
 
   return (
     <article className="rounded-2xl border border-border bg-card overflow-hidden">
+      <PackagesModal />
       {/* Hero */}
       <div className="relative aspect-[16/8] bg-gradient-to-br from-primary/20 via-accent/10 to-emerald-500/20 grid place-items-center">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,hsl(var(--primary)/0.25),transparent_60%)]" />
@@ -1495,7 +1496,7 @@ const PACKAGES: {
 }[] = [
   {
     name: "Starter",
-    price: "$X",
+    price: "$297",
     cadence: "/mo",
     tagline: "Get found in your city.",
     features: [
@@ -1507,7 +1508,7 @@ const PACKAGES: {
   },
   {
     name: "Growth",
-    price: "$X",
+    price: "$597",
     cadence: "/mo",
     tagline: "Outrank local competitors.",
     features: [
@@ -1521,7 +1522,7 @@ const PACKAGES: {
   },
   {
     name: "Dominate",
-    price: "$X",
+    price: "$997",
     cadence: "/mo",
     tagline: "Own page one, everywhere.",
     features: [
@@ -1533,6 +1534,53 @@ const PACKAGES: {
     ],
   },
 ];
+
+function PackageCards({ onChoose }: { onChoose?: (name: string) => void }) {
+  return (
+    <div className="grid md:grid-cols-3 gap-4">
+      {PACKAGES.map((p) => (
+        <div
+          key={p.name}
+          className={`relative rounded-2xl border p-6 flex flex-col ${
+            p.highlight
+              ? "border-primary bg-primary/5 shadow-lg shadow-primary/10"
+              : "border-border bg-background"
+          }`}
+        >
+          {p.highlight && (
+            <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold px-3 py-1">
+              Most popular
+            </span>
+          )}
+          <h3 className="font-bold text-lg">{p.name}</h3>
+          <p className="text-sm text-muted-foreground">{p.tagline}</p>
+          <div className="mt-4 flex items-baseline gap-1">
+            <span className="text-3xl font-bold">{p.price}</span>
+            <span className="text-sm text-muted-foreground">{p.cadence}</span>
+          </div>
+          <ul className="mt-5 space-y-2 text-sm flex-1">
+            {p.features.map((f, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span className="text-emerald-500 mt-0.5">✓</span>
+                <span>{f}</span>
+              </li>
+            ))}
+          </ul>
+          <button
+            onClick={() => onChoose?.(p.name)}
+            className={`mt-6 w-full rounded-xl font-semibold py-3 transition ${
+              p.highlight
+                ? "bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-95 shadow-lg shadow-primary/20"
+                : "border border-border hover:bg-muted"
+            }`}
+          >
+            Choose {p.name}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function PackagesSection({ brand }: { brand: string }) {
   return (
@@ -1547,52 +1595,91 @@ function PackagesSection({ brand }: { brand: string }) {
         </p>
       </div>
 
-      <div className="mt-8 grid md:grid-cols-3 gap-4">
-        {PACKAGES.map((p) => (
-          <div
-            key={p.name}
-            className={`relative rounded-2xl border p-6 flex flex-col ${
-              p.highlight
-                ? "border-primary bg-primary/5 shadow-lg shadow-primary/10"
-                : "border-border bg-background"
-            }`}
-          >
-            {p.highlight && (
-              <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold px-3 py-1">
-                Most popular
-              </span>
-            )}
-            <h3 className="font-bold text-lg">{p.name}</h3>
-            <p className="text-sm text-muted-foreground">{p.tagline}</p>
-            <div className="mt-4 flex items-baseline gap-1">
-              <span className="text-3xl font-bold">{p.price}</span>
-              <span className="text-sm text-muted-foreground">{p.cadence}</span>
-            </div>
-            <ul className="mt-5 space-y-2 text-sm flex-1">
-              {p.features.map((f, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className="text-emerald-500 mt-0.5">✓</span>
-                  <span>{f}</span>
-                </li>
-              ))}
-            </ul>
-            <button
-              className={`mt-6 w-full rounded-xl font-semibold py-3 transition ${
-                p.highlight
-                  ? "bg-gradient-to-r from-primary to-accent text-primary-foreground hover:opacity-95 shadow-lg shadow-primary/20"
-                  : "border border-border hover:bg-muted"
-              }`}
-            >
-              Choose {p.name}
-            </button>
-          </div>
-        ))}
+      <div className="mt-8">
+        <PackageCards />
       </div>
 
       <p className="mt-4 text-center text-xs text-muted-foreground">
-        Placeholder pricing — final plans and checkout coming soon.
+        Cancel anytime · No long-term contracts · 30-day ranking guarantee on Growth & Dominate.
       </p>
     </section>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────── */
+/*  Scroll-triggered packages popup                                          */
+/* ────────────────────────────────────────────────────────────────────────── */
+// Appears once the visitor scrolls past ~50% of the page so the pricing isn't
+// missed at the bottom. Shows once, is dismissible, and won't re-open after close.
+
+function PackagesModal() {
+  const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    if (dismissed) return;
+    const onScroll = () => {
+      const scrolled = window.scrollY + window.innerHeight;
+      const half = document.documentElement.scrollHeight * 0.5;
+      if (scrolled >= half) setOpen(true);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll(); // handle short pages already past the halfway mark
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [dismissed]);
+
+  const close = () => {
+    setOpen(false);
+    setDismissed(true);
+  };
+
+  if (!open || dismissed) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={close}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Choose a package"
+    >
+      <div
+        className="relative w-full max-w-4xl max-h-[90vh] overflow-auto rounded-2xl border border-border bg-card p-6 md:p-8 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={close}
+          aria-label="Close"
+          className="absolute right-4 top-4 h-8 w-8 grid place-items-center rounded-full border border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted"
+        >
+          ✕
+        </button>
+
+        <div className="text-center">
+          <p className="text-xs uppercase tracking-wider text-primary font-semibold">
+            Don't miss this
+          </p>
+          <h2 className="mt-1 text-2xl md:text-3xl font-bold tracking-tight">
+            Pick a plan and start ranking
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground max-w-xl mx-auto">
+            Your free article is just the start. Choose a package and we'll publish month after
+            month until you own page one — on Google and in AI search.
+          </p>
+        </div>
+
+        <div className="mt-6">
+          <PackageCards onChoose={close} />
+        </div>
+
+        <button
+          onClick={close}
+          className="mt-5 mx-auto block text-xs text-muted-foreground hover:text-foreground underline"
+        >
+          No thanks, I'll keep reading
+        </button>
+      </div>
+    </div>
   );
 }
 
