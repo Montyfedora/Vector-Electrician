@@ -1032,19 +1032,31 @@ Return ONLY valid JSON matching this exact shape, no markdown, no commentary:
 }`;
 
       try {
-        const res = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-5-20250929",
-            max_tokens: 8000,
-            messages: [{ role: "user", content: prompt }],
-          }),
-        });
+        // Guard the Claude call with a timeout so a slow response returns a
+        // clean error instead of letting the serverless function hard-timeout
+        // (which left the UI stuck on "Finalizing…"). Kept under the function's
+        // maxDuration (60s) so our handler wins the race and can respond.
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 55000);
+        let res: Response;
+        try {
+          res = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "x-api-key": key,
+              "anthropic-version": "2023-06-01",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-5-20250929",
+              max_tokens: 6000,
+              messages: [{ role: "user", content: prompt }],
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
         if (!res.ok) {
           const text = await res.text();
           console.error("anthropic error", res.status, text);
@@ -1057,6 +1069,10 @@ Return ONLY valid JSON matching this exact shape, no markdown, no commentary:
         const article = JSON.parse(m[0]) as GeneratedArticle;
         return { ok: true, article };
       } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") {
+          console.error("generateFreeArticle timed out");
+          return { ok: false, error: "Article generation timed out. Please try again." };
+        }
         console.error("generateFreeArticle failed", e);
         return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
       }
