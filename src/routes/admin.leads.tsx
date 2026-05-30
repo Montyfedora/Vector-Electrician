@@ -213,45 +213,10 @@ function LeadDetail({
 
       <div className="md:col-span-2">
         <h3 className="font-semibold text-sm mb-2">
-          {article.title}{" "}
-          <span className="font-normal text-muted-foreground">
-            · {article.readTimeMinutes} min read
-          </span>
+          {(article as { title?: string }).title || "Generated article"}
         </h3>
-        <div className="max-h-[420px] overflow-auto rounded-lg border border-border bg-background p-4 space-y-4 text-sm">
-          {article.keyTakeaways?.length > 0 && (
-            <div>
-              <p className="font-medium">Key Takeaways</p>
-              <ul className="mt-1 list-disc pl-5 text-muted-foreground space-y-1">
-                {article.keyTakeaways.map((k, i) => (
-                  <li key={i}>{k}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {article.sections?.map((s, i) => (
-            <div key={i}>
-              <p className="font-semibold">{s.h2}</p>
-              <p className="text-muted-foreground">{s.intro}</p>
-              {s.subsections?.map((ss, j) => (
-                <div key={j} className="mt-2">
-                  <p className="font-medium">{ss.h3}</p>
-                  <p className="text-muted-foreground">{ss.body}</p>
-                </div>
-              ))}
-            </div>
-          ))}
-          {article.faqs?.length > 0 && (
-            <div>
-              <p className="font-medium">FAQs</p>
-              {article.faqs.map((f, i) => (
-                <div key={i} className="mt-1">
-                  <p className="font-medium text-foreground">{f.q}</p>
-                  <p className="text-muted-foreground">{f.a}</p>
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="max-h-[420px] overflow-auto rounded-lg border border-border bg-background p-4 text-sm whitespace-pre-wrap text-muted-foreground">
+          {(article as { markdown?: string }).markdown || JSON.stringify(article, null, 2)}
         </div>
       </div>
     </div>
