@@ -7,10 +7,5 @@
     "env": {
       "NITRO_PRESET": "vercel"
     }
-  },
-  "functions": {
-    "**": {
-      "maxDuration": 60
-    }
   }
 }
