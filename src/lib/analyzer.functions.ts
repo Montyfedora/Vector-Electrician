@@ -862,6 +862,72 @@ export const attachArticleToLead = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// After the article finishes streaming on the client, persist the final
+// markdown to the lead row and email it. The article column is JSONB, so we
+// store { markdown, title } — no migration needed, and the admin view can
+// detect this shape vs the older structured JSON.
+const saveMarkdownInput = z.object({
+  leadId: z.string().uuid().nullable().optional(),
+  markdown: z.string().min(1).max(200000),
+  toEmail: z.string().email().max(320),
+  name: z.string().max(200).optional().default(""),
+  brand: z.string().max(200).optional().default("your business"),
+  domain: z.string().max(200).optional().default(""),
+  snapshot: z.any().optional(),
+});
+
+export const saveAndEmailMarkdownArticle = createServerFn({ method: "POST" })
+  .inputValidator((d) => saveMarkdownInput.parse(d))
+  .handler(async ({ data }): Promise<{ ok: boolean; emailed: boolean; error?: string }> => {
+    const title = titleFromMarkdown(data.markdown);
+
+    // 1) Persist to the lead row (best-effort).
+    if (data.leadId) {
+      const { error } = await supabaseAnonServer
+        .from("leads")
+        .update({ article: { markdown: data.markdown, title } })
+        .eq("id", data.leadId);
+      if (error) console.error("save markdown to lead failed", error);
+    }
+
+    // 2) Email it (reuses Resend helpers; degrades gracefully if unconfigured).
+    let emailed = false;
+    if (process.env.RESEND_API_KEY) {
+      const from = process.env.LEAD_FROM_EMAIL || "Vector.SEO <onboarding@resend.dev>";
+      const notify = process.env.LEAD_NOTIFY_EMAIL || DEFAULT_NOTIFY_EMAIL;
+      const bodyHtml = markdownToHtml(data.markdown);
+
+      const toLead = await resendSend({
+        from,
+        to: data.toEmail,
+        subject: `Your free SEO article: ${title}`,
+        html: `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#18181b;line-height:1.6;">${bodyHtml}<hr/><p style="font-size:13px;color:#71717a;">Written by Vector AI. Reply to this email and we'll help you get it live and ranking.</p></div>`,
+        reply_to: notify,
+      });
+      emailed = toLead.ok;
+
+      const snap = (data.snapshot ?? {}) as Record<string, unknown>;
+      await resendSend({
+        from,
+        to: notify,
+        subject: `New lead: ${data.name || data.toEmail} — ${data.domain || "no domain"}`,
+        html: `<h2 style="font-family:sans-serif;">New funnel lead</h2>
+            <table style="font-family:sans-serif;font-size:14px;">
+              <tr><td><strong>Name</strong></td><td>${escapeHtml(data.name || "—")}</td></tr>
+              <tr><td><strong>Email</strong></td><td>${escapeHtml(data.toEmail)}</td></tr>
+              <tr><td><strong>Business</strong></td><td>${escapeHtml(data.brand)}</td></tr>
+              <tr><td><strong>Domain</strong></td><td>${escapeHtml(data.domain || "—")}</td></tr>
+              <tr><td><strong>City</strong></td><td>${escapeHtml(String(snap.city || "—"))}</td></tr>
+            </table>
+            <h3 style="font-family:sans-serif;">Generated article</h3>
+            <div style="font-family:sans-serif;font-size:14px;line-height:1.6;border:1px solid #e4e4e7;border-radius:8px;padding:16px;">${bodyHtml}</div>`,
+        reply_to: data.toEmail,
+      });
+    }
+
+    return { ok: true, emailed };
+  });
+
 // ---------- Admin: list leads (token-protected) ----------
 
 export type LeadRow = {
@@ -1080,8 +1146,232 @@ Return ONLY valid JSON matching this exact shape, no markdown, no commentary:
   );
 
 // ============================================================================
-// CMS DETECTION + DIRECT-PUBLISH
+// CHUNKED ARTICLE GENERATOR (section-by-section for a "written live" effect)
 // ============================================================================
+// True token streaming requires a newer server-fn API than this pinned
+// TanStack version exposes. Instead we generate the article in small, fast
+// pieces: each call returns one section quickly (well under Vercel Hobby's
+// timeout), and the client reveals them as they arrive — so the user watches
+// the article build section by section, and generation never times out.
+
+function buildOutlinePrompt(data: {
+  brand: string;
+  domain: string;
+  city: string;
+  sector: string;
+  services: string[];
+  priorityKeyword: string;
+}): string {
+  const cityPart = data.city ? ` in ${data.city}` : "";
+  const kw = data.priorityKeyword || `${data.sector} services${cityPart}`;
+  const servicesList = data.services.length ? data.services.join(", ") : "core services";
+  return `You are a senior SEO content strategist. For this business, produce ONLY a JSON outline (no prose, no code fences) for a 2026 pillar article.
+
+BUSINESS
+- Brand: ${data.brand}
+- Sector: ${data.sector}
+- Service area: ${data.city || "local market"}
+- Services: ${servicesList}
+- Primary keyword: "${kw}"
+
+Return JSON exactly:
+{"title":"H1 with the primary keyword","metaDescription":"<160 chars","keyTakeaways":["5 short bullets"],"sectionTitles":["5 to 6 H2 titles, keyword in several"]}`;
+}
+
+function buildSectionPrompt(
+  data: { brand: string; city: string; sector: string; priorityKeyword: string },
+  title: string,
+  h2: string,
+): string {
+  return `Write ONE section of an SEO pillar article for ${data.brand} (${data.sector}${
+    data.city ? `, ${data.city}` : ""
+  }). Article title: "${title}". Primary keyword: "${data.priorityKeyword || data.sector}".
+
+Write the H2 section "${h2}" as GitHub-flavored Markdown:
+- Start with "## ${h2}"
+- A 2–3 sentence intro
+- Exactly 2 "### " subsections, each 90–150 words, specific and expert (mention real codes, permits, materials, costs, or processes where relevant).
+Output ONLY the markdown for this one section. No preamble, no code fences.`;
+}
+
+function buildFaqPrompt(data: { brand: string; city: string; sector: string }): string {
+  return `Write a FAQ section in GitHub-flavored Markdown for ${data.brand} (${data.sector}${
+    data.city ? `, ${data.city}` : ""
+  }):
+- Start with "## Frequently Asked Questions"
+- 5 "People Also Ask"-style Q&As. Bold each question on its own line, then a 2–4 sentence answer.
+Output ONLY the markdown. No preamble, no code fences.`;
+}
+
+async function callClaudeText(
+  key: string,
+  prompt: string,
+  maxTokens: number,
+): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 40000);
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content: prompt }],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      console.error("anthropic error", res.status, t);
+      return { ok: false, error: `Claude API ${res.status}` };
+    }
+    const json = (await res.json()) as { content?: { text?: string }[] };
+    const text = (json.content || []).map((p) => p.text || "").join("");
+    return { ok: true, text };
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError")
+      return { ok: false, error: "This step took too long. Please try again." };
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export type ArticleOutline = {
+  title: string;
+  metaDescription: string;
+  keyTakeaways: string[];
+  sectionTitles: string[];
+};
+
+const genInput = z.object({
+  brand: z.string().min(1).max(200),
+  domain: z.string().min(1).max(200),
+  city: z.string().max(120).optional().default(""),
+  sector: z.string().min(1).max(120),
+  services: z.array(z.string()).max(20).optional().default([]),
+  priorityKeyword: z.string().max(200).optional().default(""),
+});
+
+// Step 1: fast outline (title + takeaways + section titles).
+export const generateOutline = createServerFn({ method: "POST" })
+  .inputValidator((d) => genInput.parse(d))
+  .handler(
+    async ({
+      data,
+    }): Promise<{ ok: true; outline: ArticleOutline } | { ok: false; error: string }> => {
+      const key = process.env.ANTHROPIC_API_KEY;
+      if (!key) return { ok: false, error: "Article generator not configured." };
+      const r = await callClaudeText(key, buildOutlinePrompt(data), 1200);
+      if (!r.ok) return r;
+      const m = r.text.match(/\{[\s\S]*\}/);
+      if (!m) return { ok: false, error: "Could not build the outline. Please try again." };
+      try {
+        const outline = JSON.parse(m[0]) as ArticleOutline;
+        if (!outline.title || !Array.isArray(outline.sectionTitles))
+          return { ok: false, error: "Outline was incomplete. Please try again." };
+        outline.sectionTitles = outline.sectionTitles.slice(0, 6);
+        return { ok: true, outline };
+      } catch {
+        return { ok: false, error: "Could not parse the outline. Please try again." };
+      }
+    },
+  );
+
+// Step 2: one section at a time (fast, well under the timeout).
+const sectionInput = genInput.extend({
+  title: z.string().min(1).max(300),
+  h2: z.string().min(1).max(300),
+});
+
+export const generateSection = createServerFn({ method: "POST" })
+  .inputValidator((d) => sectionInput.parse(d))
+  .handler(
+    async ({ data }): Promise<{ ok: true; markdown: string } | { ok: false; error: string }> => {
+      const key = process.env.ANTHROPIC_API_KEY;
+      if (!key) return { ok: false, error: "Article generator not configured." };
+      const r = await callClaudeText(key, buildSectionPrompt(data, data.title, data.h2), 1400);
+      if (!r.ok) return r;
+      return { ok: true, markdown: r.text.trim() };
+    },
+  );
+
+// Step 3: FAQ section.
+export const generateFaqs = createServerFn({ method: "POST" })
+  .inputValidator((d) => genInput.parse(d))
+  .handler(
+    async ({ data }): Promise<{ ok: true; markdown: string } | { ok: false; error: string }> => {
+      const key = process.env.ANTHROPIC_API_KEY;
+      if (!key) return { ok: false, error: "Article generator not configured." };
+      const r = await callClaudeText(key, buildFaqPrompt(data), 1200);
+      if (!r.ok) return r;
+      return { ok: true, markdown: r.text.trim() };
+    },
+  );
+
+// Pull a human title out of assembled markdown (first H1, else first line).
+export function titleFromMarkdown(md: string): string {
+  const h1 = md.match(/^\s*#\s+(.+)$/m);
+  if (h1) return h1[1].trim();
+  const first = md.split("\n").find((l) => l.trim().length > 0);
+  return (first || "Your SEO Article")
+    .replace(/^#+\s*/, "")
+    .trim()
+    .slice(0, 140);
+}
+
+// Convert article markdown to safe HTML (for email + WordPress + admin view).
+export function markdownToHtml(md: string): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s: string) =>
+    esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, t, h) => {
+        const safe = /^https?:\/\//i.test(h) ? h : "#";
+        return `<a href="${safe}">${t}</a>`;
+      });
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let inList = false;
+  const closeList = () => {
+    if (inList) {
+      out.push("</ul>");
+      inList = false;
+    }
+  };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^###\s+/.test(line)) {
+      closeList();
+      out.push(`<h3>${inline(line.replace(/^###\s+/, ""))}</h3>`);
+    } else if (/^##\s+/.test(line)) {
+      closeList();
+      out.push(`<h2>${inline(line.replace(/^##\s+/, ""))}</h2>`);
+    } else if (/^#\s+/.test(line)) {
+      closeList();
+      out.push(`<h1>${inline(line.replace(/^#\s+/, ""))}</h1>`);
+    } else if (/^[-*]\s+/.test(line)) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push(`<li>${inline(line.replace(/^[-*]\s+/, ""))}</li>`);
+    } else if (line.trim() === "") {
+      closeList();
+    } else {
+      closeList();
+      out.push(`<p>${inline(line)}</p>`);
+    }
+  }
+  closeList();
+  return out.join("\n");
+}
 
 export type CmsPlatform =
   | "wordpress" // self-hosted WP (or unknown WP flavor)
@@ -1596,7 +1886,8 @@ const wpPublishInput = z.object({
   username: z.string().min(1).max(200),
   appPassword: z.string().min(8).max(200),
   status: z.enum(["draft", "publish"]).default("draft"),
-  article: z.any(),
+  title: z.string().min(1).max(300),
+  contentHtml: z.string().min(1).max(500000),
 });
 
 export const publishToWordPress = createServerFn({ method: "POST" })
@@ -1610,18 +1901,16 @@ export const publishToWordPress = createServerFn({ method: "POST" })
       const u = safeUrl(data.siteUrl);
       if (!u) return { ok: false, error: "Invalid site URL." };
 
-      const article = data.article as GeneratedArticle;
-      if (!article || !article.title) return { ok: false, error: "Article is empty." };
+      if (!data.title || !data.contentHtml) return { ok: false, error: "Article is empty." };
 
       const endpoint = `${u.origin}/wp-json/wp/v2/posts`;
       // Application passwords use Basic auth: "username:app-password" base64
       const authToken = btoa(`${data.username}:${data.appPassword.replace(/\s+/g, "")}`);
 
       const body = {
-        title: article.title,
-        content: articleToHtml(article),
+        title: data.title,
+        content: data.contentHtml,
         status: data.status,
-        excerpt: article.metaDescription || "",
       };
 
       try {
