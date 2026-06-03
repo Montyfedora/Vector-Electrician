@@ -1581,14 +1581,20 @@ export const detectLocation = createServerFn({ method: "POST" })
       );
       if (caMatch) return { city: caMatch[1].trim(), region: caMatch[2], confidence: "medium" };
 
-      // 3) "serving <City>" / "in <City>" phrasing in title or meta.
+      // 3) Last resort: explicit "serving <City>" phrasing only. We drop the
+      // looser "in/near/around" patterns because they grab non-city words
+      // (a wrong city is worse than none — the user can type it on Step 2).
       const title = (html.match(/<title>([^<]+)<\/title>/i)?.[1] || "").trim();
       const metaDesc =
         html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i)?.[1] || "";
       const serving = `${title} ${metaDesc}`.match(
-        /\b(?:serving|in|near|around)\s+([A-Z][a-zA-Z .'-]{2,30})\b/,
+        /\bserving\s+(?:the\s+)?([A-Z][a-zA-Z.'-]+(?:\s[A-Z][a-zA-Z.'-]+)?)\b/,
       );
-      if (serving) return { city: serving[1].trim(), region: "", confidence: "low" };
+      if (serving) {
+        // Take just the city token(s), strip trailing words like "area"/"and".
+        const city = serving[1].replace(/\s+(area|region|and|&).*$/i, "").trim();
+        if (city.length >= 3) return { city, region: "", confidence: "low" };
+      }
 
       return empty;
     },
