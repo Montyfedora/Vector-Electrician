@@ -810,6 +810,79 @@ export const analyzeVisibility = createServerFn({ method: "POST" })
     return { results, domain, keyword, gapAnalysis };
   });
 
+// ============================================================================
+// REAL COMPETITORS via SerpApi — top organic results for the user's keyword
+// ============================================================================
+export type LiveCompetitor = { domain: string; title: string; rank: number; url: string };
+
+const competitorsInput = z.object({
+  keyword: z.string().min(2).max(200),
+  city: z.string().max(120).optional().default(""),
+  domain: z.string().max(200).optional().default(""),
+});
+
+export const getCompetitors = createServerFn({ method: "POST" })
+  .inputValidator((d) => competitorsInput.parse(d))
+  .handler(
+    async ({
+      data,
+    }): Promise<
+      | { ok: true; competitors: LiveCompetitor[]; yourRank: number | null; query: string }
+      | { ok: false; error: string }
+    > => {
+      if (!process.env.SERPAPI_KEY) {
+        return { ok: false, error: "Live competitor data isn't configured yet." };
+      }
+      const query = `${data.keyword}${data.city ? ` ${data.city}` : ""}`.trim();
+      try {
+        const res = await serpApiSearch("google", query);
+        const organic: any[] = Array.isArray(res?.organic_results) ? res.organic_results : [];
+        const ownDomain = (data.domain || "").toLowerCase().replace(/^www\./, "");
+
+        const competitors: LiveCompetitor[] = [];
+        let yourRank: number | null = null;
+        const seen = new Set<string>();
+
+        organic.forEach((r, i) => {
+          const link: string = r?.link || "";
+          let host = "";
+          try {
+            host = new URL(link).hostname.replace(/^www\./, "");
+          } catch {
+            return;
+          }
+          // Skip directories/aggregators that aren't real local competitors.
+          if (
+            /(^|\.)(yelp|facebook|angi|thumbtack|houzz|bbb|yellowpages|mapquest|nextdoor|reddit|wikipedia|google)\./.test(
+              host,
+            )
+          )
+            return;
+
+          if (ownDomain && host.includes(ownDomain)) {
+            if (yourRank == null) yourRank = i + 1;
+            return;
+          }
+          if (seen.has(host)) return;
+          seen.add(host);
+          if (competitors.length < 5) {
+            competitors.push({
+              domain: host,
+              title: r?.title || host,
+              rank: i + 1,
+              url: link,
+            });
+          }
+        });
+
+        return { ok: true, competitors, yourRank, query };
+      } catch (e) {
+        console.error("getCompetitors failed", e);
+        return { ok: false, error: e instanceof Error ? e.message : "Competitor lookup failed." };
+      }
+    },
+  );
+
 const leadSchema = z.object({
   name: z.string().min(1).max(200),
   email: z.string().email().max(320),
@@ -1175,7 +1248,7 @@ BUSINESS
 - Primary keyword: "${kw}"
 
 Return JSON exactly:
-{"title":"H1 with the primary keyword","metaDescription":"<160 chars","keyTakeaways":["5 short bullets"],"sectionTitles":["5 to 6 H2 titles, keyword in several"]}`;
+{"title":"H1 with the primary keyword","metaDescription":"<160 chars compelling meta description","hook":"a 2-3 sentence opening hook that starts with an intriguing question or bold statement, then frames why this matters to the reader (do NOT include the keyword stuffed unnaturally)","keyTakeaways":["4 specific, benefit-driven bullets"],"sectionTitles":["exactly 4 H2 titles, primary keyword in 1-2 of them"],"heroImageQuery":"2-4 word stock-photo search phrase for a hero image relevant to the sector/topic","midImageQuery":"2-4 word stock-photo search phrase for a different mid-article image"}`;
 }
 
 function buildSectionPrompt(
@@ -1189,8 +1262,10 @@ function buildSectionPrompt(
 
 Write the H2 section "${h2}" as GitHub-flavored Markdown:
 - Start with "## ${h2}"
-- A 2–3 sentence intro
-- Exactly 2 "### " subsections, each 90–150 words, specific and expert (mention real codes, permits, materials, costs, or processes where relevant).
+- A 2-sentence intro that's specific and authoritative
+- Exactly 2 "### " subsections, each 70–100 words, with concrete specifics (real codes, permits, materials, typical cost ranges, timelines, or steps relevant to ${data.sector}).
+- Naturally bold 1 key phrase per subsection using **bold**.
+- Where it fits naturally, include ONE relevant external authority reference as a markdown link — only if genuinely relevant, never forced.
 Output ONLY the markdown for this one section. No preamble, no code fences.`;
 }
 
@@ -1199,7 +1274,8 @@ function buildFaqPrompt(data: { brand: string; city: string; sector: string }): 
     data.city ? `, ${data.city}` : ""
   }):
 - Start with "## Frequently Asked Questions"
-- 5 "People Also Ask"-style Q&As. Bold each question on its own line, then a 2–4 sentence answer.
+- Exactly 5 "People Also Ask"-style Q&As that real customers in this sector search for.
+- Format each as a "### " heading containing the question, followed by a 1–2 sentence answer with specifics (real numbers, costs, timelines, or code references where relevant).
 Output ONLY the markdown. No preamble, no code fences.`;
 }
 
@@ -1245,8 +1321,11 @@ async function callClaudeText(
 export type ArticleOutline = {
   title: string;
   metaDescription: string;
+  hook: string;
   keyTakeaways: string[];
   sectionTitles: string[];
+  heroImageQuery: string;
+  midImageQuery: string;
 };
 
 const genInput = z.object({
@@ -1276,6 +1355,10 @@ export const generateOutline = createServerFn({ method: "POST" })
         if (!outline.title || !Array.isArray(outline.sectionTitles))
           return { ok: false, error: "Outline was incomplete. Please try again." };
         outline.sectionTitles = outline.sectionTitles.slice(0, 6);
+        outline.hook = outline.hook || "";
+        outline.heroImageQuery = outline.heroImageQuery || `${data.sector}`;
+        outline.midImageQuery = outline.midImageQuery || `${data.sector} work`;
+        outline.keyTakeaways = Array.isArray(outline.keyTakeaways) ? outline.keyTakeaways : [];
         return { ok: true, outline };
       } catch {
         return { ok: false, error: "Could not parse the outline. Please try again." };
@@ -1347,7 +1430,18 @@ export function markdownToHtml(md: string): string {
   };
   for (const raw of lines) {
     const line = raw.trimEnd();
-    if (/^###\s+/.test(line)) {
+    const img = line.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    if (img) {
+      closeList();
+      const safe = /^https?:\/\//i.test(img[2]) ? img[2] : "";
+      if (safe)
+        out.push(
+          `<img src="${safe}" alt="${esc(img[1])}" style="width:100%;border-radius:12px;margin:16px 0;" />`,
+        );
+    } else if (/^---+\s*$/.test(line)) {
+      closeList();
+      out.push("<hr/>");
+    } else if (/^###\s+/.test(line)) {
       closeList();
       out.push(`<h3>${inline(line.replace(/^###\s+/, ""))}</h3>`);
     } else if (/^##\s+/.test(line)) {
@@ -1422,6 +1516,106 @@ function safeUrl(input: string): URL | null {
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// LOCATION DETECTION — infer the city a business serves from their website
+// ============================================================================
+// Best-effort: parses schema.org LocalBusiness/PostalAddress, common address
+// patterns, and title/meta for a city + region. Not guaranteed — some sites
+// don't expose a clear location.
+
+const US_STATES =
+  "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY";
+const CA_PROVINCES = "AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT";
+
+export const detectLocation = createServerFn({ method: "POST" })
+  .inputValidator((d) => z.object({ url: z.string().min(3).max(500) }).parse(d))
+  .handler(
+    async ({
+      data,
+    }): Promise<{ city: string; region: string; confidence: "high" | "medium" | "low" }> => {
+      const empty = { city: "", region: "", confidence: "low" as const };
+      const u = safeUrl(data.url);
+      if (!u) return empty;
+
+      let html = "";
+      try {
+        const res = await fetch(u.toString(), {
+          headers: { "User-Agent": "Mozilla/5.0 Vector.SEO Location/1.0" },
+          redirect: "follow",
+        });
+        html = (await res.text()).slice(0, 300_000);
+      } catch {
+        return empty;
+      }
+
+      // 1) schema.org JSON-LD PostalAddress (highest confidence).
+      const ldBlocks = [
+        ...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi),
+      ];
+      for (const b of ldBlocks) {
+        try {
+          const json = JSON.parse(b[1].trim());
+          const found = findAddress(json);
+          if (found?.city) {
+            return {
+              city: found.city,
+              region: found.region || "",
+              confidence: "high",
+            };
+          }
+        } catch {
+          /* ignore malformed JSON-LD */
+        }
+      }
+
+      // 2) microdata / common "City, ST ZIP" pattern in the HTML.
+      const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+      const usMatch = text.match(
+        new RegExp(`([A-Z][a-zA-Z .'-]{2,30}),\\s*(${US_STATES})\\s*\\d{5}`),
+      );
+      if (usMatch) return { city: usMatch[1].trim(), region: usMatch[2], confidence: "medium" };
+      const caMatch = text.match(
+        new RegExp(`([A-Z][a-zA-Z .'-]{2,30}),\\s*(${CA_PROVINCES})\\s*[A-Z]\\d[A-Z]`),
+      );
+      if (caMatch) return { city: caMatch[1].trim(), region: caMatch[2], confidence: "medium" };
+
+      // 3) "serving <City>" / "in <City>" phrasing in title or meta.
+      const title = (html.match(/<title>([^<]+)<\/title>/i)?.[1] || "").trim();
+      const metaDesc =
+        html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i)?.[1] || "";
+      const serving = `${title} ${metaDesc}`.match(
+        /\b(?:serving|in|near|around)\s+([A-Z][a-zA-Z .'-]{2,30})\b/,
+      );
+      if (serving) return { city: serving[1].trim(), region: "", confidence: "low" };
+
+      return empty;
+    },
+  );
+
+// Recursively search a JSON-LD object for a PostalAddress.
+function findAddress(node: unknown): { city: string; region: string } | null {
+  if (!node || typeof node !== "object") return null;
+  const obj = node as Record<string, unknown>;
+  const addr = obj.address as Record<string, unknown> | undefined;
+  if (addr && typeof addr === "object") {
+    const city = (addr.addressLocality as string) || "";
+    const region = (addr.addressRegion as string) || "";
+    if (city) return { city, region };
+  }
+  // @type PostalAddress directly
+  if (obj["@type"] === "PostalAddress" && obj.addressLocality) {
+    return {
+      city: obj.addressLocality as string,
+      region: (obj.addressRegion as string) || "",
+    };
+  }
+  for (const v of Object.values(obj)) {
+    const found = findAddress(v);
+    if (found) return found;
+  }
+  return null;
 }
 
 export const detectCms = createServerFn({ method: "POST" })
@@ -1955,3 +2149,70 @@ export const publishToWordPress = createServerFn({ method: "POST" })
       }
     },
   );
+
+// ============================================================================
+// STRIPE CHECKOUT — hosted Checkout Session links for the 3 packages
+// ============================================================================
+// Uses Stripe's REST API directly (no SDK dependency). Requires:
+//   STRIPE_SECRET_KEY        — sk_live_... or sk_test_...
+//   STRIPE_PRICE_STARTER     — price_... for the Starter plan
+//   STRIPE_PRICE_GROWTH      — price_... for the Growth plan
+//   STRIPE_PRICE_DOMINATE    — price_... for the Dominate plan
+//   PUBLIC_SITE_URL (optional) — used for success/cancel redirect base
+//
+// Create the 3 products/prices in your Stripe dashboard (recurring monthly),
+// copy each price ID into the env vars above, and these buttons will work.
+
+const checkoutInput = z.object({
+  plan: z.enum(["starter", "growth", "dominate"]),
+  email: z.string().email().max(320).optional(),
+  origin: z.string().url().max(300).optional(),
+});
+
+export const createCheckoutSession = createServerFn({ method: "POST" })
+  .inputValidator((d) => checkoutInput.parse(d))
+  .handler(async ({ data }): Promise<{ ok: true; url: string } | { ok: false; error: string }> => {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) return { ok: false, error: "Checkout isn't configured yet." };
+
+    const priceMap: Record<string, string | undefined> = {
+      starter: process.env.STRIPE_PRICE_STARTER,
+      growth: process.env.STRIPE_PRICE_GROWTH,
+      dominate: process.env.STRIPE_PRICE_DOMINATE,
+    };
+    const price = priceMap[data.plan];
+    if (!price) return { ok: false, error: `Price for the ${data.plan} plan isn't configured.` };
+
+    const base = (data.origin || process.env.PUBLIC_SITE_URL || "").replace(/\/$/, "");
+    const successUrl = `${base}/electricians-2?checkout=success`;
+    const cancelUrl = `${base}/electricians-2?checkout=cancelled`;
+
+    const form = new URLSearchParams();
+    form.set("mode", "subscription");
+    form.set("line_items[0][price]", price);
+    form.set("line_items[0][quantity]", "1");
+    form.set("success_url", successUrl);
+    form.set("cancel_url", cancelUrl);
+    form.set("allow_promotion_codes", "true");
+    if (data.email) form.set("customer_email", data.email);
+
+    try {
+      const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: form.toString(),
+      });
+      const json = (await res.json()) as { url?: string; error?: { message?: string } };
+      if (!res.ok || !json.url) {
+        console.error("stripe checkout failed", res.status, json);
+        return { ok: false, error: json.error?.message || "Could not start checkout." };
+      }
+      return { ok: true, url: json.url };
+    } catch (e) {
+      console.error("stripe checkout error", e);
+      return { ok: false, error: e instanceof Error ? e.message : "Checkout error." };
+    }
+  });
