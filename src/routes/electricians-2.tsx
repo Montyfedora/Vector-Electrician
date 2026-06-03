@@ -68,11 +68,76 @@ function extractDomain(input: string): string {
 }
 
 function brandFromDomain(d: string): string {
-  const root = d.split(".")[0] || d;
-  return root
-    .split(/[-_]/)
+  const root = (d.split(".")[0] || d).trim();
+
+  // Split on explicit separators first.
+  let words = root.split(/[-_]/).filter(Boolean);
+
+  // Then split camelCase / number boundaries within each chunk
+  // (e.g. "AcmeElectric" -> "Acme Electric", "abc123" -> "abc 123").
+  words = words.flatMap((w) =>
+    w
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/([a-zA-Z])(\d)/g, "$1 $2")
+      .replace(/(\d)([a-zA-Z])/g, "$1 $2")
+      .split(" ")
+      .filter(Boolean),
+  );
+
+  // Finally, peel common trade/suffix words off the end of all-lowercase runs
+  // (e.g. "acmeelectric" -> "acme electric", "torontoplumbing" -> "toronto plumbing").
+  const SUFFIXES = [
+    "electrical",
+    "electric",
+    "electricians",
+    "electrician",
+    "plumbing",
+    "plumbers",
+    "plumber",
+    "roofing",
+    "roofers",
+    "hvac",
+    "heating",
+    "cooling",
+    "contractors",
+    "contracting",
+    "construction",
+    "services",
+    "service",
+    "solutions",
+    "group",
+    "company",
+    "co",
+    "inc",
+    "pros",
+    "experts",
+    "and",
+    "sons",
+  ];
+  words = words.flatMap((w) => {
+    let lower = w.toLowerCase();
+    if (w.length < 8 || /[A-Z]/.test(w.slice(1))) return [w]; // already mixed/short
+    const parts: string[] = [];
+    let guard = 0;
+    let matched = true;
+    while (matched && guard++ < 6) {
+      matched = false;
+      for (const suf of SUFFIXES) {
+        if (lower.length > suf.length + 1 && lower.endsWith(suf)) {
+          parts.unshift(suf);
+          lower = lower.slice(0, -suf.length);
+          matched = true;
+          break;
+        }
+      }
+    }
+    return lower ? [lower, ...parts] : parts.length ? parts : [w];
+  });
+
+  return words
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+    .join(" ")
+    .trim();
 }
 
 const DEFAULT_SERVICES = [
@@ -550,10 +615,13 @@ function Step1Scan({
       try {
         const loc = await detectLoc({ data: { url: data.url || data.domain } });
         if (!cancelled && loc?.city) {
+          // Store ONLY the city name (no region/state) so the article keyword
+          // reads "panel upgrades Toronto", not "panel upgrades Toronto, ON".
+          const cityOnly = loc.city.split(",")[0].trim();
           setData((d) => ({
             ...d,
             // Only set if the user hasn't already typed a city.
-            city: d.city?.trim() ? d.city : loc.region ? `${loc.city}, ${loc.region}` : loc.city,
+            city: d.city?.trim() ? d.city : cityOnly,
           }));
         }
       } catch {
@@ -1304,14 +1372,20 @@ function Step5Account({
       const total = sections.length + 1; // sections + FAQ
 
       // Build keyword-based stock image URLs via LoremFlickr (royalty-free,
-      // no API key). The `/lock/<seed>` form returns a stable image per seed so
-      // the same article keeps the same photos across reloads.
-      const imgUrl = (q: string, seed: number) =>
-        `https://loremflickr.com/1200/630/${encodeURIComponent(
-          (q || data.brand || "business").trim().replace(/\s+/g, ","),
-        )}/all?lock=${seed}`;
+      // no API key). We anchor every query with the sector so results stay on
+      // topic, and use a stable lock seed so the photo persists across reloads.
+      const sectorAnchor = "electrician,electrical"; // keeps images on-topic
+      const imgUrl = (q: string, seed: number) => {
+        const cleaned = (q || "")
+          .trim()
+          .replace(/[^a-zA-Z0-9 ]/g, "")
+          .split(/\s+/)
+          .slice(0, 3)
+          .join(",");
+        const query = [sectorAnchor, cleaned].filter(Boolean).join(",");
+        return `https://loremflickr.com/1200/630/${encodeURIComponent(query)}/all?lock=${seed}`;
+      };
       const heroImg = imgUrl(outline.heroImageQuery, 11);
-      const midImg = imgUrl(outline.midImageQuery, 22);
 
       // Helper to slugify section titles for the clickable TOC anchors.
       const toSlug = (s: string) =>
@@ -1343,7 +1417,12 @@ function Step5Account({
         });
         if (sec.ok) {
           md += sec.markdown + "\n\n";
-          if (i === midPoint) md += `![${outline.midImageQuery} — ${data.brand}](${midImg})\n\n`;
+          if (i === midPoint) {
+            // Tie the mid-article image to the section it follows so it's always
+            // relevant to the surrounding content (plus the sector anchor).
+            const midImg = imgUrl(`${sections[i]} ${outline.midImageQuery}`, 22);
+            md += `![${sections[i]} — ${data.brand}](${midImg})\n\n`;
+          }
           setMarkdown(md);
         }
       }
