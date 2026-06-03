@@ -12,6 +12,7 @@ import {
   detectCms,
   detectLocation,
   getCompetitors,
+  getImage,
   createCheckoutSession,
   publishToWordPress,
   type CmsDetection,
@@ -1299,6 +1300,7 @@ function Step5Account({
   const genSection = useServerFn(generateSection);
   const genFaqs = useServerFn(generateFaqs);
   const saveAndEmail = useServerFn(saveAndEmailMarkdownArticle);
+  const getImg = useServerFn(getImage);
   const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<"form" | "writing" | "done">("form");
@@ -1371,21 +1373,20 @@ function Step5Account({
       const sections = outline.sectionTitles;
       const total = sections.length + 1; // sections + FAQ
 
-      // Build keyword-based stock image URLs via LoremFlickr (royalty-free,
-      // no API key). We anchor every query with the sector so results stay on
-      // topic, and use a stable lock seed so the photo persists across reloads.
-      const sectorAnchor = "electrician,electrical"; // keeps images on-topic
-      const imgUrl = (q: string, seed: number) => {
-        const cleaned = (q || "")
-          .trim()
-          .replace(/[^a-zA-Z0-9 ]/g, "")
-          .split(/\s+/)
-          .slice(0, 3)
-          .join(",");
-        const query = [sectorAnchor, cleaned].filter(Boolean).join(",");
-        return `https://loremflickr.com/1200/630/${encodeURIComponent(query)}/all?lock=${seed}`;
+      // Fetch a relevant hero image from Unsplash (real, royalty-free). Returns
+      // an empty string if Unsplash isn't configured or finds nothing — the
+      // renderer then shows a branded placeholder. We anchor queries to the
+      // sector so photos stay on topic.
+      const sector = "electrician";
+      const fetchImg = async (q: string, variant: number): Promise<string> => {
+        try {
+          const r = await getImg({ data: { query: `${sector} ${q}`.trim(), variant } });
+          return r.ok ? r.url : "";
+        } catch {
+          return "";
+        }
       };
-      const heroImg = imgUrl(outline.heroImageQuery, 11);
+      const heroImg = await fetchImg(outline.heroImageQuery || "electrical work", 0);
 
       // Helper to slugify section titles for the clickable TOC anchors.
       const toSlug = (s: string) =>
@@ -1396,7 +1397,7 @@ function Step5Account({
 
       // Assemble the article: title → hero image → hook → key takeaways → TOC.
       let md = `# ${outline.title}\n\n`;
-      md += `![${outline.title}](${heroImg})\n\n`;
+      if (heroImg) md += `![${outline.title}](${heroImg})\n\n`;
       if (outline.hook) md += `${outline.hook}\n\n`;
       md += `**Key Takeaways**\n\n${(outline.keyTakeaways || [])
         .map((k) => `- ${k}`)
@@ -1418,10 +1419,9 @@ function Step5Account({
         if (sec.ok) {
           md += sec.markdown + "\n\n";
           if (i === midPoint) {
-            // Tie the mid-article image to the section it follows so it's always
-            // relevant to the surrounding content (plus the sector anchor).
-            const midImg = imgUrl(`${sections[i]} ${outline.midImageQuery}`, 22);
-            md += `![${sections[i]} — ${data.brand}](${midImg})\n\n`;
+            // Mid image is tied to the section it follows so it's relevant.
+            const midImg = await fetchImg(sections[i], 1);
+            if (midImg) md += `![${sections[i]} — ${data.brand}](${midImg})\n\n`;
           }
           setMarkdown(md);
         }
