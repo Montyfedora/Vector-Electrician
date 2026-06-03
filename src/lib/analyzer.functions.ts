@@ -1610,19 +1610,51 @@ export const detectLocation = createServerFn({ method: "POST" })
         return { city: usCity, region: st, confidence: "medium" };
       }
 
-      // 3) Last resort: explicit "serving <City>" phrasing only. We drop the
-      // looser "in/near/around" patterns because they grab non-city words
-      // (a wrong city is worse than none — the user can type it on Step 2).
+      // 2b) Address WITHOUT a comma before the city, e.g.
+      //     "2087 Montreal Rd Ottawa, ON K1J 6M6". Take the single capitalized
+      //     word immediately before ", ON <postal>" (that's the city, since the
+      //     street name precedes it). Reject street-type words.
+      const noCommaCa = text.match(
+        new RegExp(`\\b([A-Z][a-zA-Z'-]{2,20})\\s*,\\s*(${CA_PROVINCES})\\b\\s*[A-Z]\\d[A-Z]`),
+      );
+      if (noCommaCa) {
+        const c = noCommaCa[1].trim();
+        if (
+          !/\b(rd|road|st|street|ave|avenue|blvd|boulevard|dr|drive|way|lane|ln|hwy|highway|cres|crescent|court|ct|place|pl)$/i.test(
+            c,
+          )
+        ) {
+          return { city: c, region: noCommaCa[2], confidence: "medium" };
+        }
+      }
+
+      // 3) Title + meta are the most reliable signal for SEO-optimized local
+      //    sites (e.g. "Electrician Services in Ottawa"). Look for the city after
+      //    "in"/"serving" in the TITLE and meta description specifically — these
+      //    are curated, unlike body text. We also confirm by counting mentions.
       const title = (html.match(/<title>([^<]+)<\/title>/i)?.[1] || "").trim();
+      const ogTitle =
+        html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i)?.[1] || "";
       const metaDesc =
         html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i)?.[1] || "";
-      const serving = `${title} ${metaDesc}`.match(
-        /\bserving\s+(?:the\s+)?([A-Z][a-zA-Z.'-]+(?:\s[A-Z][a-zA-Z.'-]+)?)\b/,
+      const ogDesc =
+        html.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i)?.[1] ||
+        "";
+      const curated = `${title} | ${ogTitle} | ${metaDesc} | ${ogDesc}`;
+
+      // "... in <City>" or "... serving <City>" — capture 1-2 capitalized words.
+      const inCity = curated.match(
+        /\b(?:in|serving|across|around|for|near)\s+(?:the\s+)?([A-Z][a-zA-Z'-]+(?:\s[A-Z][a-zA-Z'-]+)?)\b/,
       );
-      if (serving) {
-        // Take just the city token(s), strip trailing words like "area"/"and".
-        const city = serving[1].replace(/\s+(area|region|and|&).*$/i, "").trim();
-        if (city.length >= 3) return { city, region: "", confidence: "low" };
+      if (inCity) {
+        const c = inCity[1].replace(/\s+(Area|Region|And|&).*$/i, "").trim();
+        // Skip generic non-city words that can follow "in/for".
+        if (
+          c.length >= 3 &&
+          !/^(Emergency|Residential|Commercial|Services?|Repair|Your|Our|Need|The)$/i.test(c)
+        ) {
+          return { city: c, region: "", confidence: "medium" };
+        }
       }
 
       return empty;
