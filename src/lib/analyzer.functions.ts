@@ -1570,16 +1570,45 @@ export const detectLocation = createServerFn({ method: "POST" })
         }
       }
 
-      // 2) microdata / common "City, ST ZIP" pattern in the HTML.
+      // 2) Plain-text address. A typical address is:
+      //    "<street>, <City>, ON <postal>"  /  "<street>, <City>, ST <ZIP>"
+      // The CITY is the comma-separated token IMMEDIATELY BEFORE the province/
+      // state code — NOT a greedy run (which previously captured street names
+      // like "Montreal Rd"). We anchor on the province/postal, then take the
+      // single segment just before it.
       const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-      const usMatch = text.match(
-        new RegExp(`([A-Z][a-zA-Z .'-]{2,30}),\\s*(${US_STATES})\\s*\\d{5}`),
-      );
-      if (usMatch) return { city: usMatch[1].trim(), region: usMatch[2], confidence: "medium" };
-      const caMatch = text.match(
-        new RegExp(`([A-Z][a-zA-Z .'-]{2,30}),\\s*(${CA_PROVINCES})\\s*[A-Z]\\d[A-Z]`),
-      );
-      if (caMatch) return { city: caMatch[1].trim(), region: caMatch[2], confidence: "medium" };
+
+      const cityBefore = (provincePattern: string, postalPattern: string): string | null => {
+        // Match: , <City>, <PROV> <postal>   — City has no comma and isn't a
+        // street (we reject tokens ending in common street-type words).
+        const re = new RegExp(
+          `,\\s*([A-Za-z][A-Za-z .'-]{1,28}?),\\s*(${provincePattern})\\b[\\s,]*${postalPattern}`,
+        );
+        const m = text.match(re);
+        if (!m) return null;
+        const candidate = m[1].trim();
+        // Reject street-like tokens (end with a street type or start with a number).
+        if (
+          /\b(rd|road|st|street|ave|avenue|blvd|boulevard|dr|drive|way|lane|ln|hwy|highway|crescent|cres|court|ct|place|pl|unit|suite|ste)\.?$/i.test(
+            candidate,
+          ) ||
+          /^\d/.test(candidate)
+        ) {
+          return null;
+        }
+        return candidate;
+      };
+
+      const caCity = cityBefore(CA_PROVINCES, "[A-Z]\\d[A-Z]");
+      if (caCity) {
+        const prov = text.match(new RegExp(`${caCity},\\s*(${CA_PROVINCES})`))?.[1] || "";
+        return { city: caCity, region: prov, confidence: "medium" };
+      }
+      const usCity = cityBefore(US_STATES, "\\d{5}");
+      if (usCity) {
+        const st = text.match(new RegExp(`${usCity},\\s*(${US_STATES})`))?.[1] || "";
+        return { city: usCity, region: st, confidence: "medium" };
+      }
 
       // 3) Last resort: explicit "serving <City>" phrasing only. We drop the
       // looser "in/near/around" patterns because they grab non-city words
@@ -2222,3 +2251,68 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
       return { ok: false, error: e instanceof Error ? e.message : "Checkout error." };
     }
   });
+
+// ============================================================================
+// UNSPLASH IMAGES — relevant, royalty-free photos via the Unsplash API
+// ============================================================================
+// Requires UNSPLASH_ACCESS_KEY (free: unsplash.com/developers). Returns a
+// real photo URL for a keyword query. Falls back to ok:false if unconfigured
+// or nothing is found, so the client can show a branded placeholder instead.
+
+const unsplashInput = z.object({
+  query: z.string().min(2).max(120),
+  // A seed so two requests in the same article get different photos.
+  variant: z.number().int().min(0).max(9).optional().default(0),
+});
+
+export const getImage = createServerFn({ method: "POST" })
+  .inputValidator((d) => unsplashInput.parse(d))
+  .handler(
+    async ({
+      data,
+    }): Promise<{ ok: true; url: string; alt: string; credit: string } | { ok: false }> => {
+      const key = process.env.UNSPLASH_ACCESS_KEY;
+      if (!key) return { ok: false };
+      try {
+        const params = new URLSearchParams({
+          query: data.query,
+          orientation: "landscape",
+          per_page: "10",
+          content_filter: "high",
+        });
+        const res = await fetch(`https://api.unsplash.com/search/photos?${params.toString()}`, {
+          headers: { Authorization: `Client-ID ${key}`, "Accept-Version": "v1" },
+        });
+        if (!res.ok) {
+          console.error("unsplash error", res.status, await res.text().catch(() => ""));
+          return { ok: false };
+        }
+        const json = (await res.json()) as {
+          results?: {
+            urls?: { regular?: string; raw?: string };
+            alt_description?: string;
+            user?: { name?: string };
+          }[];
+        };
+        const results = json.results || [];
+        if (!results.length) return { ok: false };
+        // Pick a deterministic-but-varied result so hero/mid differ.
+        const pick = results[data.variant % results.length] || results[0];
+        const base = pick.urls?.regular || pick.urls?.raw;
+        if (!base) return { ok: false };
+        // Constrain size for fast loading.
+        const url = base.includes("?")
+          ? `${base}&w=1200&h=630&fit=crop`
+          : `${base}?w=1200&h=630&fit=crop`;
+        return {
+          ok: true,
+          url,
+          alt: pick.alt_description || data.query,
+          credit: pick.user?.name || "Unsplash",
+        };
+      } catch (e) {
+        console.error("unsplash fetch failed", e);
+        return { ok: false };
+      }
+    },
+  );
