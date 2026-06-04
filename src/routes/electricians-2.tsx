@@ -1962,7 +1962,9 @@ function LiveArticleView({
               type="application/ld+json"
               dangerouslySetInnerHTML={{ __html: buildArticleSchema(markdown, brand, domain) }}
             />
-            <PublishPanel markdown={markdown} domain={domain} brand={brand} />
+
+            {/* Packages first — choosing a plan is the priority action. */}
+            <PackagesSection brand={brand} email={email} />
 
             {emailSent ? (
               <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-center">
@@ -1976,7 +1978,8 @@ function LiveArticleView({
             )}
             {error && <p className="text-xs text-center text-muted-foreground">{error}</p>}
 
-            <PackagesSection brand={brand} email={email} />
+            {/* Publishing options below — secondary action. */}
+            <PublishPanel markdown={markdown} domain={domain} brand={brand} />
           </div>
         )}
       </div>
