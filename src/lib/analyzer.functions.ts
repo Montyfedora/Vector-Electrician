@@ -2234,6 +2234,7 @@ const checkoutInput = z.object({
   plan: z.enum(["starter", "growth", "dominate"]),
   email: z.string().email().max(320).optional(),
   origin: z.string().url().max(300).optional(),
+  trial: z.boolean().optional().default(false),
 });
 
 export const createCheckoutSession = createServerFn({ method: "POST" })
@@ -2262,6 +2263,20 @@ export const createCheckoutSession = createServerFn({ method: "POST" })
     form.set("cancel_url", cancelUrl);
     form.set("allow_promotion_codes", "true");
     if (data.email) form.set("customer_email", data.email);
+
+    if (data.trial) {
+      // $1 / 3-day trial → then the plan's regular monthly price auto-charges.
+      // The subscription gets a 3-day free trial (so the recurring price isn't
+      // charged yet), and we collect $1 now as a one-time trial fee via an
+      // inline price_data line item. After 3 days Stripe bills the plan price.
+      form.set("subscription_data[trial_period_days]", "3");
+      form.set("line_items[1][quantity]", "1");
+      form.set("line_items[1][price_data][currency]", "usd");
+      form.set("line_items[1][price_data][unit_amount]", "100"); // $1.00 in cents
+      form.set("line_items[1][price_data][product_data][name]", "3-Day Trial Access");
+      // Make the $1 a one-off (not recurring) charge.
+      form.set("line_items[1][price_data][tax_behavior]", "inclusive");
+    }
 
     try {
       const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
