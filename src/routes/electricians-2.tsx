@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, useRef, type FormEvent } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import {
   submitLead,
@@ -485,6 +485,27 @@ function Funnel({
     "Get Your Free Article & Choose A Package Below",
   ];
 
+  // Each step registers a "try to advance" handler here so the top-nav Next
+  // button can trigger the same action (with that step's own validation) as the
+  // step's in-body Next button. Returns true if it advanced.
+  const nextHandler = useRef<null | (() => boolean)>(null);
+  const registerNext = (fn: (() => boolean) | null) => {
+    nextHandler.current = fn;
+  };
+
+  const handleTopNext = () => {
+    // If we've already been further, just navigate forward.
+    if (maxReached > step) {
+      setStep(step + 1);
+      return;
+    }
+    // Otherwise ask the current step to validate + advance.
+    if (nextHandler.current) nextHandler.current();
+  };
+
+  // Step 1 (scan) and Step 5 (final) don't use the manual Next.
+  const topNextDisabled = step >= 5 || step === 1;
+
   return (
     <section className="mx-auto max-w-3xl px-4 py-6">
       {/* Sticky top navigation — jump between completed steps without scrolling */}
@@ -501,10 +522,10 @@ function Funnel({
             Step {step} of 5: {titles[step - 1]}
           </span>
           <button
-            onClick={() => maxReached > step && setStep(step + 1)}
-            disabled={maxReached <= step || step >= 5}
-            title={maxReached <= step ? "Complete this step to continue" : "Go to next step"}
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted transition disabled:opacity-40"
+            onClick={handleTopNext}
+            disabled={topNextDisabled}
+            title={topNextDisabled ? "" : "Continue"}
+            className="rounded-md border border-border bg-primary/5 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/10 transition disabled:opacity-40 disabled:text-muted-foreground disabled:bg-transparent"
           >
             Next →
           </button>
@@ -523,9 +544,23 @@ function Funnel({
       <h2 className="text-center text-2xl md:text-3xl font-bold mb-6">{titles[step - 1]}</h2>
       <div className="mt-4">
         {step === 1 && <Step1Scan data={data} setData={setData} onDone={() => setStep(2)} />}
-        {step === 2 && <Step2Business data={data} setData={setData} onNext={() => setStep(3)} />}
-        {step === 3 && <Step3Process onNext={() => setStep(4)} />}
-        {step === 4 && <Step4Competitors data={data} setData={setData} onNext={() => setStep(5)} />}
+        {step === 2 && (
+          <Step2Business
+            data={data}
+            setData={setData}
+            onNext={() => setStep(3)}
+            registerNext={registerNext}
+          />
+        )}
+        {step === 3 && <Step3Process onNext={() => setStep(4)} registerNext={registerNext} />}
+        {step === 4 && (
+          <Step4Competitors
+            data={data}
+            setData={setData}
+            onNext={() => setStep(5)}
+            registerNext={registerNext}
+          />
+        )}
         {step === 5 && <Step5Account data={data} setData={setData} />}
       </div>
       <div className="h-10" />
@@ -697,10 +732,12 @@ function Step2Business({
   data,
   setData,
   onNext,
+  registerNext,
 }: {
   data: FunnelData;
   setData: React.Dispatch<React.SetStateAction<FunnelData>>;
   onNext: () => void;
+  registerNext?: (fn: (() => boolean) | null) => void;
 }) {
   const [qIdx, setQIdx] = useState(0);
   const totalQ = QUESTIONS.length;
@@ -714,6 +751,32 @@ function Step2Business({
       setData((d) => ({ ...d, priority: d.services[0] }));
     }
   }, [data.services, data.priority, setData]);
+
+  // Validated advance — shared by the in-body Next button AND the top-nav Next.
+  const tryAdvance = (): boolean => {
+    if (inQuestions) {
+      // Still answering survey questions; jump to the end of them.
+      setQIdx(totalQ);
+      return false;
+    }
+    if (!data.city.trim()) {
+      alert("Please enter your primary service city so we can localize your article and plan.");
+      return false;
+    }
+    if (!data.services.filter((s) => s.trim()).length) {
+      alert("Please add at least one service you offer.");
+      return false;
+    }
+    onNext();
+    return true;
+  };
+
+  // Register for the top navigation Next button.
+  useEffect(() => {
+    registerNext?.(tryAdvance);
+    return () => registerNext?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.city, data.services, inQuestions]);
 
   const pick = (val: string) => {
     setData((d) => ({ ...d, answers: { ...d.answers, [currentQ.id]: val } }));
@@ -855,19 +918,7 @@ function Step2Business({
       </div>
 
       <button
-        onClick={() => {
-          if (!data.city.trim()) {
-            alert(
-              "Please enter your primary service city so we can localize your article and plan.",
-            );
-            return;
-          }
-          if (!data.services.filter((s) => s.trim()).length) {
-            alert("Please add at least one service you offer.");
-            return;
-          }
-          onNext();
-        }}
+        onClick={tryAdvance}
         className="w-full rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground font-semibold py-4 hover:opacity-95 transition shadow-lg shadow-primary/20"
       >
         Next Step →
@@ -958,7 +1009,22 @@ function ServiceList({
 /*  Step 3 — Process                                                         */
 /* ────────────────────────────────────────────────────────────────────────── */
 
-function Step3Process({ onNext }: { onNext: () => void }) {
+function Step3Process({
+  onNext,
+  registerNext,
+}: {
+  onNext: () => void;
+  registerNext?: (fn: (() => boolean) | null) => void;
+}) {
+  useEffect(() => {
+    registerNext?.(() => {
+      onNext();
+      return true;
+    });
+    return () => registerNext?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const items = [
     {
       n: 1,
@@ -1040,14 +1106,25 @@ function Step4Competitors({
   data,
   setData,
   onNext,
+  registerNext,
 }: {
   data: FunnelData;
   setData: React.Dispatch<React.SetStateAction<FunnelData>>;
   onNext: () => void;
+  registerNext?: (fn: (() => boolean) | null) => void;
 }) {
   const fetchCompetitors = useServerFn(getCompetitors);
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    registerNext?.(() => {
+      onNext();
+      return true;
+    });
+    return () => registerNext?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Try to load REAL competitors from Google (via SerpApi) for the user's
   // primary keyword + city. Falls back to a plausible seeded set if SerpApi
@@ -1804,6 +1881,12 @@ function LiveArticleView({
     ? Math.min(100, Math.round((progress.current / progress.total) * 100))
     : 0;
 
+  // Once the article is finished, collapse it into a compact preview box so the
+  // publish + packages sections are easy to reach without scrolling the whole
+  // article. The user expands it with the arrow when they want to read it all.
+  const [expanded, setExpanded] = useState(false);
+  const collapsible = !writing; // only collapse after it's written
+
   return (
     <article className="rounded-2xl border border-border bg-card overflow-hidden">
       {!writing && <PackagesModal />}
@@ -1839,9 +1922,37 @@ function LiveArticleView({
           {domain && <span>· For {domain}</span>}
         </div>
 
-        <MarkdownRender markdown={markdown} />
-        {writing && (
-          <span className="inline-block h-4 w-2 bg-primary animate-pulse align-middle ml-0.5" />
+        {collapsible ? (
+          <div className="rounded-xl border border-border bg-background/50">
+            <div
+              className="relative overflow-hidden transition-all duration-500"
+              style={{ maxHeight: expanded ? "100000px" : "420px" }}
+            >
+              <div className="p-5 md:p-6">
+                <MarkdownRender markdown={markdown} />
+              </div>
+              {/* Fade overlay when collapsed */}
+              {!expanded && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-card to-transparent" />
+              )}
+            </div>
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="w-full flex items-center justify-center gap-2 border-t border-border py-3 text-sm font-semibold text-primary hover:bg-primary/5 transition"
+            >
+              {expanded ? "Collapse article" : "Expand & read the full article"}
+              <span className={`transition-transform duration-300 ${expanded ? "rotate-180" : ""}`}>
+                ▾
+              </span>
+            </button>
+          </div>
+        ) : (
+          <>
+            <MarkdownRender markdown={markdown} />
+            {writing && (
+              <span className="inline-block h-4 w-2 bg-primary animate-pulse align-middle ml-0.5" />
+            )}
+          </>
         )}
 
         {!writing && (
@@ -1881,6 +1992,7 @@ const PACKAGES: {
   name: string;
   plan: "starter" | "growth" | "dominate";
   price: string;
+  priceValue: number; // numeric monthly price (for value/savings math)
   cadence: string;
   tagline: string;
   features: string[];
@@ -1890,27 +2002,29 @@ const PACKAGES: {
     name: "Starter",
     plan: "starter",
     price: "$297",
+    priceValue: 297,
     cadence: "/mo",
     tagline: "Get found in your city.",
     features: [
-      "4 SEO articles per month",
-      "On-page optimization",
+      "10 SEO articles per month",
+      "On-page optimization audit",
       "Google Business Profile tune-up",
-      "Monthly ranking report",
+      "Monthly Ranking Report",
     ],
   },
   {
     name: "Growth",
     plan: "growth",
     price: "$597",
+    priceValue: 597,
     cadence: "/mo",
     tagline: "Outrank local competitors.",
     features: [
-      "12 SEO articles per month",
+      "20 SEO articles per month",
       "Everything in Starter",
       "Trust-link building (autopilot)",
-      "AI search optimization (ChatGPT, Perplexity)",
-      "Priority support",
+      "AI Search optimization (ChatGPT, Perplexity, Gemini)",
+      "Priority Support",
     ],
     highlight: true,
   },
@@ -1918,22 +2032,53 @@ const PACKAGES: {
     name: "Dominate",
     plan: "dominate",
     price: "$997",
+    priceValue: 997,
     cadence: "/mo",
     tagline: "Own page one, everywhere.",
     features: [
       "30 SEO articles per month",
       "Everything in Growth",
-      "Dedicated strategist",
+      "Dedicated Strategist",
       "Multi-location / multi-service coverage",
       "Guaranteed rankings in 30 days",
     ],
   },
 ];
 
+// ── Trial-offer countdown ────────────────────────────────────────────────
+// The $1 / 3-day trial is only available while a 10-minute countdown is live.
+// When it hits zero, the trial offer is withdrawn and the buttons revert to
+// the regular monthly price. We use a module-level start time so the timer is
+// consistent across the modal and the inline section within one page load.
+const TRIAL_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+let trialClockStart = 0;
+function getTrialClockStart() {
+  if (!trialClockStart) trialClockStart = Date.now();
+  return trialClockStart;
+}
+
+function useTrialCountdown() {
+  const [remaining, setRemaining] = useState(() =>
+    Math.max(0, TRIAL_WINDOW_MS - (Date.now() - getTrialClockStart())),
+  );
+  useEffect(() => {
+    const t = setInterval(() => {
+      setRemaining(Math.max(0, TRIAL_WINDOW_MS - (Date.now() - getTrialClockStart())));
+    }, 1000);
+    return () => clearInterval(t);
+  }, []);
+  const trialActive = remaining > 0;
+  const mm = Math.floor(remaining / 60000);
+  const ss = Math.floor((remaining % 60000) / 1000);
+  const label = `${mm}:${ss.toString().padStart(2, "0")}`;
+  return { trialActive, label };
+}
+
 function PackageCards({ onChoose, email }: { onChoose?: (name: string) => void; email?: string }) {
   const checkout = useServerFn(createCheckoutSession);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const { trialActive } = useTrialCountdown();
 
   const choose = async (plan: "starter" | "growth" | "dominate", name: string) => {
     onChoose?.(name);
@@ -1941,7 +2086,9 @@ function PackageCards({ onChoose, email }: { onChoose?: (name: string) => void; 
     setBusyPlan(plan);
     try {
       const origin = typeof window !== "undefined" ? window.location.origin : undefined;
-      const res = await checkout({ data: { plan, email, origin } });
+      // Pass the trial flag so the server starts a $1 / 3-day trial checkout
+      // only while the offer window is live.
+      const res = await checkout({ data: { plan, email, origin, trial: trialActive } });
       if (res.ok && res.url) {
         window.location.href = res.url; // redirect to Stripe-hosted checkout
       } else {
@@ -1973,10 +2120,34 @@ function PackageCards({ onChoose, email }: { onChoose?: (name: string) => void; 
             )}
             <h3 className="font-bold text-lg">{p.name}</h3>
             <p className="text-sm text-muted-foreground">{p.tagline}</p>
-            <div className="mt-4 flex items-baseline gap-1">
-              <span className="text-3xl font-bold">{p.price}</span>
-              <span className="text-sm text-muted-foreground">{p.cadence}</span>
-            </div>
+
+            {/* Pricing — $1 trial while the offer window is live, else regular. */}
+            {trialActive ? (
+              <div className="mt-4">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-bold">$1</span>
+                  <span className="text-sm text-muted-foreground line-through">
+                    {p.price}
+                    {p.cadence}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  3-day full access trial, then {p.price}
+                  {p.cadence}
+                </p>
+              </div>
+            ) : (
+              <div className="mt-4">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-bold">{p.price}</span>
+                  <span className="text-sm text-muted-foreground">{p.cadence}</span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Billed monthly · cancel anytime
+                </p>
+              </div>
+            )}
+
             <ul className="mt-5 space-y-2 text-sm flex-1">
               {p.features.map((f, i) => (
                 <li key={i} className="flex items-start gap-2">
@@ -1994,7 +2165,11 @@ function PackageCards({ onChoose, email }: { onChoose?: (name: string) => void; 
                   : "border border-border hover:bg-muted"
               }`}
             >
-              {busyPlan === p.plan ? "Starting checkout…" : `Choose ${p.name}`}
+              {busyPlan === p.plan
+                ? "Starting checkout…"
+                : trialActive
+                  ? `Start trial for $1 →`
+                  : `Choose ${p.name}`}
             </button>
           </div>
         ))}
@@ -2004,7 +2179,69 @@ function PackageCards({ onChoose, email }: { onChoose?: (name: string) => void; 
   );
 }
 
+// Scarcity banner shown above the cards: live countdown that gates the trial.
+function TrialCountdownBanner() {
+  const { trialActive, label } = useTrialCountdown();
+  if (trialActive) {
+    return (
+      <div className="mx-auto mb-5 flex max-w-md items-center justify-center gap-2 rounded-full border border-amber-400/50 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700">
+        <span>⏳</span>
+        <span>
+          $1 trial offer expires in <span className="tabular-nums">{label}</span>
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="mx-auto mb-5 max-w-md rounded-full border border-border bg-muted px-4 py-2 text-center text-sm text-muted-foreground">
+      The $1 trial offer has expired — regular pricing now applies.
+    </div>
+  );
+}
+
+// Trust stats + testimonial + payment reassurance (shared by section & modal).
+function TrustBlock() {
+  return (
+    <div className="mt-8 space-y-5">
+      <div className="grid grid-cols-3 gap-2 rounded-2xl border border-border bg-background p-4 text-center">
+        <div>
+          <div className="text-xl md:text-2xl font-bold text-primary">5,000+</div>
+          <div className="text-xs text-muted-foreground">Businesses served</div>
+        </div>
+        <div className="border-x border-border">
+          <div className="text-xl md:text-2xl font-bold text-primary">100K+</div>
+          <div className="text-xs text-muted-foreground">Articles published</div>
+        </div>
+        <div>
+          <div className="text-xl md:text-2xl font-bold text-primary">4.0★</div>
+          <div className="text-xs text-muted-foreground">Trustpilot rating</div>
+        </div>
+      </div>
+
+      <figure className="rounded-2xl border border-border bg-background p-5">
+        <div className="text-emerald-500 text-sm" aria-label="5 out of 5 stars">
+          ★★★★★
+        </div>
+        <blockquote className="mt-2 text-sm leading-relaxed">
+          “The articles being produced are better than anything else I've tried, and the rankings
+          followed. Worth every dollar.”
+        </blockquote>
+        <figcaption className="mt-3 text-xs text-muted-foreground">
+          <span className="font-semibold text-foreground">Verified customer</span> · Trustpilot
+        </figcaption>
+      </figure>
+
+      <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1">🛡️ Cancel anytime</span>
+        <span className="inline-flex items-center gap-1">✓ No setup fees</span>
+        <span className="inline-flex items-center gap-1">🔒 Secure checkout by Stripe</span>
+      </div>
+    </div>
+  );
+}
+
 function PackagesSection({ brand, email }: { brand: string; email?: string }) {
+  const { trialActive } = useTrialCountdown();
   return (
     <section className="pt-2">
       <div className="text-center">
@@ -2012,13 +2249,28 @@ function PackagesSection({ brand, email }: { brand: string; email?: string }) {
           Choose a package to get {brand || "your business"} ranking
         </h2>
         <p className="mt-2 text-sm text-muted-foreground max-w-xl mx-auto">
-          You just saw what one free article looks like. Pick a plan and we'll do this every month —
-          hands-off — until you own your local market.
+          {trialActive
+            ? "Start with a 3-day trial for just $1. Cancel anytime, no questions asked."
+            : "Pick a plan and we'll rank you every month — hands-off — until you own your local market."}
         </p>
       </div>
 
-      <div className="mt-8">
+      <div className="mt-6">
+        <TrialCountdownBanner />
         <PackageCards email={email} />
+      </div>
+
+      <TrustBlock />
+
+      <div className="mt-6 flex justify-center">
+        <a
+          href="https://calendly.com"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 px-5 py-2.5 text-sm font-semibold text-primary hover:bg-primary/10 transition"
+        >
+          📞 Book a Call With a Ranking Specialist
+        </a>
       </div>
 
       <p className="mt-4 text-center text-xs text-muted-foreground">
@@ -2079,27 +2331,40 @@ function PackagesModal() {
 
         <div className="text-center">
           <p className="text-xs uppercase tracking-wider text-primary font-semibold">
-            Don't miss this
+            Limited-time offer
           </p>
           <h2 className="mt-1 text-2xl md:text-3xl font-bold tracking-tight">
-            Pick a plan and start ranking
+            Start ranking for just $1
           </h2>
           <p className="mt-2 text-sm text-muted-foreground max-w-xl mx-auto">
-            Your free article is just the start. Choose a package and we'll publish month after
-            month until you own page one — on Google and in AI search.
+            Try any plan free for 3 days for $1. Cancel anytime — no questions asked. After the
+            trial, your plan continues at its regular monthly rate.
           </p>
         </div>
 
         <div className="mt-6">
+          <TrialCountdownBanner />
           <PackageCards onChoose={close} />
         </div>
 
-        <button
-          onClick={close}
-          className="mt-5 mx-auto block text-xs text-muted-foreground hover:text-foreground underline"
-        >
-          No thanks, I'll keep reading
-        </button>
+        <TrustBlock />
+
+        <div className="mt-5 flex flex-col items-center gap-2">
+          <a
+            href="https://calendly.com"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-xl border border-primary/40 bg-primary/5 px-5 py-2.5 text-sm font-semibold text-primary hover:bg-primary/10 transition"
+          >
+            📞 Book a Call With a Ranking Specialist
+          </a>
+          <button
+            onClick={close}
+            className="text-xs text-muted-foreground hover:text-foreground underline"
+          >
+            No thanks, I'll keep reading
+          </button>
+        </div>
       </div>
     </div>
   );
